@@ -209,6 +209,7 @@ function App() {
   const [overviewSlotHeight, setOverviewSlotHeight] = useState(DEFAULT_SLOT_HEIGHT / 4)
   const [isZoomAnimating, setIsZoomAnimating] = useState(false)
   const frozenFocusRangeRef = useRef<TimeRange>({ start: 0, end: 1440 })
+  const focusReturnZoomRef = useRef<Zoom>(100)
   const zoomFocusMinutesRef = useRef<number | null>(null)
   const previousTimelineRef = useRef<{ slotHeight: number; rangeStart: number; scrollTop: number; zoom: Zoom; view: ViewMode; anchor: number } | null>(null)
   const calendarScrollRef = useRef<HTMLDivElement>(null)
@@ -352,6 +353,15 @@ function App() {
       if (previousTimelineRef.current) previousTimelineRef.current.scrollTop = surface.scrollTop
     }
     setZoom(next)
+  }
+
+  function toggleFocus() {
+    if (zoom === 'focus') {
+      changeZoom(focusReturnZoomRef.current)
+      return
+    }
+    focusReturnZoomRef.current = zoom
+    changeZoom('focus')
   }
 
   function notify(message: string) { setUndoEntry(null); setToast(message) }
@@ -645,7 +655,7 @@ function App() {
   function calendarBody() {
     if (view === 'month') return <div className="calendar-surface">{renderMonth()}</div>
     const body = view === 'today' ? renderToday() : <div ref={calendarScrollRef} className={`calendar-surface${view === 'day' ? ' view-day' : ''}`}>{renderTimeline(view === 'week' ? weekDays(anchor) : [anchor])}</div>
-    return <><CalendarZoom zoom={zoom} rangeLabel={timeRangeLabel(timeRange)} empty={focusedTasks.length === 0} disabled={draggingTaskId !== null || resizePreview !== null} onStep={(direction) => changeZoom(stepCalendarZoom(zoom, slotHeight, direction))} onChange={changeZoom} />{body}</>
+    return <><CalendarZoom zoom={zoom} rangeLabel={timeRangeLabel(timeRange)} empty={focusedTasks.length === 0} disabled={draggingTaskId !== null || resizePreview !== null} onStep={(direction) => changeZoom(stepCalendarZoom(zoom, slotHeight, direction))} onChange={changeZoom} onToggleFocus={toggleFocus} />{body}</>
   }
 
   const totalMinutes = visibleTasks.reduce((sum, task) => sum + task.duration, 0)

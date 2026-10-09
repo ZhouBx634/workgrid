@@ -19,8 +19,9 @@ async function saved(page: Page) {
 }
 
 async function settled(page: Page) {
-  await expect(page.locator('.duration-timeline')).toHaveAttribute('aria-busy', 'false')
-  expect(await page.locator('.duration-timeline').evaluate((element) => (element as HTMLElement).inert)).toBe(false)
+  await expect.poll(() => page.locator('.duration-timeline').evaluate((element) =>
+    element.getAttribute('aria-busy') === 'false' && !(element as HTMLElement).inert && element.getAnimations({ subtree: true }).length === 0,
+  )).toBe(true)
 }
 
 async function range(page: Page, start: number, end: number) {
@@ -178,4 +179,56 @@ test('focus range stays fixed during resize and adapts only after release', asyn
   expect((await saved(page))[0].duration).toBe(120)
   expect((await saved(page))[0].start).toBe(original[0].start)
   await expect(page.getByRole('dialog', { name: '编辑工作方块' })).toHaveCount(0)
+})
+
+test('clicking focus again exits to the zoom mode used before focusing', async ({ page }) => {
+  await setup(page)
+  const original = await saved(page)
+  await page.getByRole('button', { name: '全天总览' }).click()
+  await page.getByRole('button', { name: '聚焦日程' }).click()
+  await range(page, 480, 1320)
+  await page.getByRole('button', { name: '聚焦日程' }).click()
+  await range(page, 0, 1440)
+  await expect(page.getByLabel('日历缩放比例')).toHaveText('全天')
+  await expect(page.getByRole('button', { name: '聚焦日程' })).toHaveAttribute('aria-pressed', 'false')
+
+  await page.getByRole('button', { name: '恢复默认缩放' }).click()
+  await expect(page.getByLabel('日历缩放比例')).toHaveText('100%')
+  await page.getByRole('button', { name: '聚焦日程' }).click()
+  await range(page, 480, 1320)
+  await page.getByRole('button', { name: '聚焦日程' }).click()
+  await range(page, 0, 1440)
+  await expect(page.getByLabel('日历缩放比例')).toHaveText('100%')
+  await page.getByRole('button', { name: '缩小日历', exact: true }).click()
+  await expect(page.getByLabel('日历缩放比例')).toHaveText('75%')
+  await page.getByRole('button', { name: '聚焦日程' }).click()
+  await range(page, 480, 1320)
+  await page.getByRole('button', { name: '日', exact: true }).click()
+  await page.getByRole('button', { name: '聚焦日程' }).click()
+  await range(page, 0, 1440)
+  await expect(page.getByLabel('日历缩放比例')).toHaveText('75%')
+  expect(await saved(page)).toEqual(original)
+})
+
+test('persisted focus can be toggled off and repeated clicks leave the calendar interactive', async ({ page }) => {
+  test.setTimeout(60_000)
+  await setup(page)
+  const original = await saved(page)
+  await page.getByRole('button', { name: '聚焦日程' }).click()
+  await range(page, 480, 1320)
+  await page.reload()
+  await range(page, 480, 1320)
+  await page.evaluate(async () => {
+    const button = document.querySelector<HTMLButtonElement>('.zoom-focus')!
+    for (let index = 0; index < 5; index++) {
+      button.click()
+      await new Promise(requestAnimationFrame)
+    }
+  })
+  await range(page, 0, 1440)
+  await expect(page.getByLabel('日历缩放比例')).toHaveText('100%')
+  await page.reload()
+  await range(page, 0, 1440)
+  await expect(page.getByRole('button', { name: '聚焦日程' })).toHaveAttribute('aria-pressed', 'false')
+  expect(await saved(page)).toEqual(original)
 })
