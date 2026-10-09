@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { DndContext, DragOverlay, MouseSensor, TouchSensor, pointerWithin, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragMoveEvent, type DragStartEvent } from '@dnd-kit/core'
 import { Bell, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, Clock3, GripVertical, ListChecks, Pause, Pencil, Play, Plus, RotateCcw, Search, Trash2, X } from 'lucide-react'
 import { addMinutes, format, isBefore, isSameDay, startOfDay } from 'date-fns'
@@ -7,6 +7,11 @@ import { monthDays, monthLabel, moveAnchor, normalizeDropDate, taskIsVisible, ta
 import DataManagement from './components/DataManagement'
 import CloudSync from './components/CloudSync'
 import InstallApp from './components/InstallApp'
+import CourseImport from './components/CourseImport'
+import CalendarZoom from './components/CalendarZoom'
+import { DEFAULT_SLOT_HEIGHT, ZOOM_STORAGE_KEY, fitSlotHeight, focusedTimeRange, loadCalendarZoom, stepCalendarZoom, timeRangeLabel, type CalendarZoom as Zoom, type TimeRange } from './calendarZoom'
+import { applyCourseImport, undoCourseImport, type CourseOccurrence } from './courseImport'
+import { clearCourseRecovery, loadCourseRecovery, saveCourseRecovery } from './courseRecovery'
 import { dueEndReminderTasks, dueReminderTasks, reminderLabel } from './reminders'
 import { dropDateFromPosition, parseDurationInput } from './scheduling'
 import { recurrenceDates, recurrenceLabel } from './recurrence'
@@ -26,10 +31,6 @@ const REMINDER_OPTIONS: Array<{ value: number | null; label: string }> = [
 ]
 const EMPTY_DRAFT: TaskDraft = { title: '', color: 'blue', duration: 60, tags: [] }
 const SLOT_MINUTES = 15
-const SLOT_HEIGHT = 22
-const WORK_START = 0
-const WORK_END = 24
-const SLOT_COUNT = ((WORK_END - WORK_START) * 60) / SLOT_MINUTES
 
 function durationLabel(minutes: number) {
   if (minutes < 60) return `${minutes} 分钟`
@@ -78,9 +79,9 @@ function TaskCard({ task, selected, batchMode, batchSelected, onSelect, onEdit }
 
 interface LaidOutTask { task: Task; lane: number; laneCount: number; top: number; height: number }
 
-function layoutDayTasks(tasks: Task[], preview: { id: string; duration: number } | null): LaidOutTask[] {
-  const dayStart = WORK_START * 60
-  const dayEnd = WORK_END * 60
+function layoutDayTasks(tasks: Task[], preview: { id: string; duration: number } | null, slotHeight: number, range: TimeRange): LaidOutTask[] {
+  const dayStart = range.start
+  const dayEnd = range.end
   const candidates = tasks.filter((task) => task.start).map((task) => {
     const start = new Date(task.start!)
     const startMinutes = start.getHours() * 60 + start.getMinutes()
@@ -107,7 +108,8 @@ function layoutDayTasks(tasks: Task[], preview: { id: string; duration: number }
     assignments.forEach(({ item, lane }) => {
       const visibleStart = Math.max(item.startMinutes, dayStart)
       const visibleEnd = Math.min(item.endMinutes, dayEnd)
-      result.push({ task: item.task, lane, laneCount: laneEnds.length, top: ((visibleStart - dayStart) / SLOT_MINUTES) * SLOT_HEIGHT, height: Math.max(SLOT_HEIGHT, ((visibleEnd - visibleStart) / SLOT_MINUTES) * SLOT_HEIGHT) })
+      const height = Math.min(((dayEnd - visibleStart) / SLOT_MINUTES) * slotHeight, Math.max(slotHeight, ((visibleEnd - visibleStart) / SLOT_MINUTES) * slotHeight))
+      result.push({ task: item.task, lane, laneCount: laneEnds.length, top: ((visibleStart - dayStart) / SLOT_MINUTES) * slotHeight, height })
     })
     index = next
   }
@@ -136,9 +138,9 @@ function CalendarEvent({ item, duration, batchMode, batchSelected, onOpen, onTog
   const end = addMinutes(start, duration)
   const style = { top: item.top, height: item.height, left: `calc(${(item.lane / item.laneCount) * 100}% + 3px)`, width: `calc(${100 / item.laneCount}% - 6px)` }
   return (
-    <article ref={setNodeRef} className={`calendar-event color-${task.color} status-${task.status}${batchSelected ? ' is-batch-selected' : ''}${isDragging ? ' is-dragging' : ''}`} style={style} aria-label={`${task.title}，${STATUS_LABELS[task.status]}，${format(start, 'HH:mm')} 至 ${format(end, 'HH:mm')}`} onClick={(event) => { event.stopPropagation(); batchMode ? onToggleBatch() : onOpen() }} {...attributes} {...(!batchMode ? listeners : {})}>
+    <article ref={setNodeRef} className={`calendar-event color-${task.color} status-${task.status}${item.height < 42 ? ' is-compact' : ''}${item.height < 30 ? ' is-tiny' : ''}${batchSelected ? ' is-batch-selected' : ''}${isDragging ? ' is-dragging' : ''}`} style={style} title={`${task.title} · ${format(start, 'HH:mm')} - ${format(end, 'HH:mm')}`} aria-label={`${task.title}，${STATUS_LABELS[task.status]}，${format(start, 'HH:mm')} 至 ${format(end, 'HH:mm')}`} onClick={(event) => { event.stopPropagation(); batchMode ? onToggleBatch() : onOpen() }} {...attributes} {...(!batchMode ? listeners : {})}>
       {batchMode && <SelectionMark selected={batchSelected} />}
-      <div className="event-main"><strong>{task.title}</strong><span>{format(start, 'HH:mm')} - {format(end, 'HH:mm')}</span></div>
+      <div className="event-main"><strong>{task.title}</strong><span>{format(start, 'HH:mm')} - {format(end, 'HH:mm')}</span>{task.calendarImport && <small className="course-event-details" title={[task.calendarImport.location, task.calendarImport.teacher, task.calendarImport.teachingClass].filter(Boolean).join(' · ')}>{[task.calendarImport.location, task.calendarImport.teacher].filter(Boolean).join(' · ')}</small>}</div>
       {!batchMode && <div className="event-actions" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>{task.status === 'completed' ? <button type="button" aria-label="重新打开" title="重新打开" onClick={() => onStatus('todo')}><RotateCcw size={13} /></button> : <><button type="button" aria-label={task.status === 'in-progress' ? '暂停' : '开始'} title={task.status === 'in-progress' ? '暂停' : '开始'} onClick={() => onStatus(task.status === 'in-progress' ? 'todo' : 'in-progress')}>{task.status === 'in-progress' ? <Pause size={13} /> : <Play size={13} />}</button><button type="button" aria-label="完成" title="完成" onClick={() => onStatus('completed')}><Check size={14} /></button></>}</div>}
       {!batchMode && <button className="resize-handle" type="button" aria-label="调整时长" title="拖动调整时长" onPointerDown={onResize} onClick={(event) => { event.preventDefault(); event.stopPropagation() }} />}
     </article>
@@ -197,10 +199,19 @@ function App() {
   const [undoEntry, setUndoEntry] = useState<UndoEntry | null>(null)
   const [trashOpen, setTrashOpen] = useState(false)
   const [canUndoImport, setCanUndoImport] = useState(() => loadImportRecovery() !== null)
+  const [courseImportOpen, setCourseImportOpen] = useState(false)
+  const [canUndoCourseImport, setCanUndoCourseImport] = useState(() => loadCourseRecovery() !== null)
   const [batchMode, setBatchMode] = useState(false)
   const [batchSelection, setBatchSelection] = useState<Set<string>>(new Set())
   const [dragGuide, setDragGuide] = useState<DragGuide | null>(null)
   const [dragPreviewOffsetY, setDragPreviewOffsetY] = useState(0)
+  const [zoom, setZoom] = useState<Zoom>(loadCalendarZoom)
+  const [overviewSlotHeight, setOverviewSlotHeight] = useState(DEFAULT_SLOT_HEIGHT / 4)
+  const [isZoomAnimating, setIsZoomAnimating] = useState(false)
+  const frozenFocusRangeRef = useRef<TimeRange>({ start: 0, end: 1440 })
+  const focusReturnZoomRef = useRef<Zoom>(100)
+  const zoomFocusMinutesRef = useRef<number | null>(null)
+  const previousTimelineRef = useRef<{ slotHeight: number; rangeStart: number; scrollTop: number; zoom: Zoom; view: ViewMode; anchor: number } | null>(null)
   const calendarScrollRef = useRef<HTMLDivElement>(null)
   const tasksRef = useRef(tasks)
   const dragGuideRef = useRef<DragGuide | null>(null)
@@ -215,10 +226,23 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [toast, undoEntry])
   useEffect(() => {
-    if (view === 'month') return
-    const frame = window.requestAnimationFrame(() => { if (calendarScrollRef.current) calendarScrollRef.current.scrollTop = 7.5 * 4 * SLOT_HEIGHT - 24 })
-    return () => window.cancelAnimationFrame(frame)
-  }, [view, anchor])
+    try { localStorage.setItem(ZOOM_STORAGE_KEY, String(zoom)) } catch { /* Zoom remains usable if storage is unavailable. */ }
+  }, [zoom])
+  useLayoutEffect(() => {
+    const surface = calendarScrollRef.current
+    if (view === 'month' || !surface) return
+    function measureOverview() {
+      if (!surface) return
+      const maxHeight = Number.parseFloat(getComputedStyle(surface).maxHeight)
+      const headerHeight = surface.querySelector('.timeline-header-corner')?.getBoundingClientRect().height ?? 56
+      if (Number.isFinite(maxHeight)) setOverviewSlotHeight(fitSlotHeight(maxHeight, headerHeight))
+    }
+    measureOverview()
+    const observer = new ResizeObserver(measureOverview)
+    observer.observe(surface)
+    window.addEventListener('resize', measureOverview)
+    return () => { observer.disconnect(); window.removeEventListener('resize', measureOverview) }
+  }, [view])
   useEffect(() => {
     function checkReminders() {
       const dueStarts = dueReminderTasks(tasks).filter((task) => {
@@ -277,6 +301,68 @@ function App() {
   const todayTasks = filteredTasks.filter((task) => task.start && isSameDay(new Date(task.start), today))
   const completedTodayTasks = todayTasks.filter((task) => task.status === 'completed')
   const overdueTasks = filteredTasks.filter((task) => task.start && isBefore(new Date(task.start), today) && task.status !== 'completed')
+
+  const focusedTasks = view === 'today' ? todayTasks : visibleTasks
+  const candidateRange = focusedTimeRange(focusedTasks)
+  // Keep the time-to-pixel mapping fixed throughout a drag or resize, including cloud updates.
+  if (!draggingTaskId && !resizePreview) frozenFocusRangeRef.current = candidateRange
+  const timeRange = zoom === 'focus' ? frozenFocusRangeRef.current : { start: 0, end: 1440 }
+  const slotCount = (timeRange.end - timeRange.start) / SLOT_MINUTES
+  const slotHeight = typeof zoom === 'number' ? DEFAULT_SLOT_HEIGHT * zoom / 100 : overviewSlotHeight * 96 / slotCount
+
+  useLayoutEffect(() => {
+    const surface = calendarScrollRef.current
+    if (view === 'month' || !surface) { previousTimelineRef.current = null; return }
+    const previous = previousTimelineRef.current
+    const sameView = previous?.view === view && previous.anchor === anchor.getTime()
+    if (typeof zoom !== 'number') surface.scrollTop = 0
+    else if (!sameView) surface.scrollTop = 7.5 * 4 * slotHeight - 24
+    else if (zoomFocusMinutesRef.current !== null) surface.scrollTop = zoomFocusMinutesRef.current / SLOT_MINUTES * slotHeight - (surface.clientHeight - 56) / 2
+    else if (previous.slotHeight !== slotHeight) surface.scrollTop *= slotHeight / previous.slotHeight
+    zoomFocusMinutesRef.current = null
+    previousTimelineRef.current = { slotHeight, rangeStart: timeRange.start, scrollTop: surface.scrollTop, zoom, view, anchor: anchor.getTime() }
+    const geometryChanged = previous && (previous.slotHeight !== slotHeight || previous.rangeStart !== timeRange.start)
+    if (!sameView || !geometryChanged || (previous.zoom !== 'focus' && zoom !== 'focus') || draggingTaskId || resizePreview || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+
+    // Animate a visual-only transform; the final layout and all scheduling coordinates stay exact.
+    const offset = (timeRange.start - previous.rangeStart) / SLOT_MINUTES * previous.slotHeight - previous.scrollTop + surface.scrollTop
+    const scale = previous.slotHeight / slotHeight
+    const timeline = surface.querySelector<HTMLElement>('.duration-timeline')!
+    timeline.inert = true
+    surface.dataset.zoomAnimating = 'true'
+    setIsZoomAnimating(true)
+    const animations = Array.from(surface.querySelectorAll<HTMLElement>('.day-track, .time-rail')).map((element) => element.animate([
+      { transform: `translateY(${offset}px) scaleY(${scale})` },
+      { transform: 'translateY(0px) scaleY(1)' },
+    ], { duration: 380, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' }))
+    let active = true
+    function unlock() {
+      timeline.inert = false
+      delete surface!.dataset.zoomAnimating
+      setIsZoomAnimating(false)
+    }
+    void Promise.all(animations.map((animation) => animation.finished)).then(() => { if (active) unlock() }).catch(() => { /* Replacement transitions handle cancellation. */ })
+    return () => { active = false; animations.forEach((animation) => animation.cancel()); unlock() }
+  }, [slotHeight, timeRange.start, view, anchor, zoom, draggingTaskId, resizePreview?.id])
+
+  function changeZoom(next: Zoom) {
+    if (next === zoom) return
+    const surface = calendarScrollRef.current
+    if (surface) {
+      zoomFocusMinutesRef.current = timeRange.start + (surface.scrollTop + (surface.clientHeight - 56) / 2) / slotHeight * SLOT_MINUTES
+      if (previousTimelineRef.current) previousTimelineRef.current.scrollTop = surface.scrollTop
+    }
+    setZoom(next)
+  }
+
+  function toggleFocus() {
+    if (zoom === 'focus') {
+      changeZoom(focusReturnZoomRef.current)
+      return
+    }
+    focusReturnZoomRef.current = zoom
+    changeZoom('focus')
+  }
 
   function notify(message: string) { setUndoEntry(null); setToast(message) }
   function commitTaskChange(label: string, message: string, update: (current: Task[]) => Task[]) {
@@ -351,13 +437,13 @@ function App() {
     const track = calendarScrollRef.current?.querySelector<HTMLElement>(`.day-track[data-day="${CSS.escape(target.day)}"]`)
     const trackTop = track?.getBoundingClientRect().top ?? event.over.rect.top
     const previewTop = event.active.rect.current.translated?.top ?? initialY + event.delta.y
-    return { day: target.day, trackTop, previewTop, slot: dropDateFromPosition(new Date(target.day), previewTop, trackTop, SLOT_HEIGHT, SLOT_MINUTES) }
+    return { day: target.day, trackTop, previewTop, slot: dropDateFromPosition(new Date(target.day), previewTop, trackTop, slotHeight, SLOT_MINUTES, timeRange.start, timeRange.end) }
   }
   function handleDragMove(event: DragMoveEvent) {
     const result = dragSlotFromEvent(event)
     if (!result) { dragGuideRef.current = null; setDragGuide(null); setDragPreviewOffsetY(0); return }
     const minutes = result.slot.getHours() * 60 + result.slot.getMinutes()
-    const guideTop = (minutes / SLOT_MINUTES) * SLOT_HEIGHT
+    const guideTop = ((minutes - timeRange.start) / SLOT_MINUTES) * slotHeight
     const guide = { day: result.day, slot: result.slot, top: guideTop }
     dragGuideRef.current = guide
     setDragGuide(guide)
@@ -432,6 +518,36 @@ function App() {
     try { saveTasks(recovery); replaceTasksFromExternal(recovery); clearImportRecovery(); setCanUndoImport(false); setSelectedTaskId(null); notify('已撤销上次导入') }
     catch { notify('恢复失败，当前数据未改变') }
   }
+  function importCourses(courses: CourseOccurrence[], updateKeys: Set<string>, reviewedTasks: string) {
+    const current = tasksRef.current
+    if (JSON.stringify(current) !== reviewedTasks) { notify('日程已变化，请重新核对课表预览后确认'); return false }
+    const result = applyCourseImport(current, courses, updateKeys)
+    if (!result.changes.length) { notify('课程已导入，无需重复添加'); return false }
+    const previousRecovery = loadCourseRecovery()
+    try {
+      saveCourseRecovery(result.changes)
+      saveTasks(result.tasks)
+    } catch {
+      try { previousRecovery ? saveCourseRecovery(previousRecovery) : clearCourseRecovery() } catch { /* Current schedules remain unchanged. */ }
+      notify('浏览器存储空间不足，课表导入未完成，原日程保留')
+      return false
+    }
+    replaceTasksFromExternal(result.tasks)
+    setCanUndoCourseImport(true)
+    notify(`课表已导入：新增 ${result.added} 节，更新 ${result.updated} 节，原有日程保留`)
+    return true
+  }
+  function undoLastCourseImport() {
+    const recovery = loadCourseRecovery()
+    if (!recovery) { setCanUndoCourseImport(false); notify('没有可撤销的课表导入'); return }
+    const result = undoCourseImport(tasksRef.current, recovery)
+    try { saveTasks(result.tasks) }
+    catch { notify('撤销失败，当前日程未改变'); return }
+    replaceTasksFromExternal(result.tasks)
+    try { clearCourseRecovery() } catch { /* Repeating undo will not touch unrelated tasks. */ }
+    setCanUndoCourseImport(false)
+    notify(`已撤销 ${result.reverted} 节课程${result.skipped ? `，保留 ${result.skipped} 节导入后修改的课程` : ''}，其他日程保留`)
+  }
   function moveToToday(taskId: string) {
     commitTaskChange('移到今天', '已移到今天', (current) => current.map((task) => {
       if (task.id !== taskId || !task.start) return task
@@ -450,9 +566,9 @@ function App() {
   function startResize(event: React.PointerEvent, task: Task) {
     if (event.pointerType === 'touch') return
     event.preventDefault(); event.stopPropagation(); const startY = event.clientY; const original = task.duration
-    const onMove = (moveEvent: PointerEvent) => { const slots = Math.round((moveEvent.clientY - startY) / SLOT_HEIGHT); setResizePreview({ id: task.id, duration: Math.max(15, Math.min(720, original + slots * SLOT_MINUTES)) }) }
+    const onMove = (moveEvent: PointerEvent) => { const slots = Math.round((moveEvent.clientY - startY) / slotHeight); setResizePreview({ id: task.id, duration: Math.max(15, Math.min(720, original + slots * SLOT_MINUTES)) }) }
     const onUp = (upEvent: PointerEvent) => {
-      const slots = Math.round((upEvent.clientY - startY) / SLOT_HEIGHT); const duration = Math.max(15, Math.min(720, original + slots * SLOT_MINUTES))
+      const slots = Math.round((upEvent.clientY - startY) / slotHeight); const duration = Math.max(15, Math.min(720, original + slots * SLOT_MINUTES))
       commitTaskChange('时长调整', `时长已调整为 ${durationLabel(duration)}`, (current) => current.map((item) => item.id === task.id ? { ...item, duration, endRemindedAt: null } : item)); setResizePreview(null)
       window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp)
     }
@@ -513,14 +629,14 @@ function App() {
   }
 
   function renderTimeline(days: Date[]) {
-    const slots = Array.from({ length: SLOT_COUNT }, (_, index) => index)
-    return <div className="duration-timeline" style={{ '--day-count': days.length, '--slot-height': `${SLOT_HEIGHT}px`, '--slot-count': SLOT_COUNT } as React.CSSProperties}>
+    const slots = Array.from({ length: slotCount }, (_, index) => index)
+    return <div className="duration-timeline" data-range-start={timeRange.start} data-range-end={timeRange.end} aria-busy={isZoomAnimating} style={{ '--day-count': days.length, '--slot-height': `${slotHeight}px`, '--slot-count': slotCount } as React.CSSProperties}>
       <div className="timeline-header-corner" />
       {days.map((day) => <div className={`day-heading${isSameDay(day, new Date()) ? ' is-today' : ''}`} key={`heading-${day.toISOString()}`}><span>{format(day, 'EEE', { locale: zhCN })}</span><strong>{format(day, 'd')}</strong></div>)}
-      <div className="time-rail">{Array.from({ length: WORK_END - WORK_START + 1 }, (_, index) => <span key={index} style={{ top: index * SLOT_HEIGHT * 4 }}>{String(WORK_START + index).padStart(2, '0')}:00</span>)}</div>
+      <div className="time-rail">{Array.from({ length: (timeRange.end - timeRange.start) / 60 + 1 }, (_, index) => <span key={index} style={{ top: index * slotHeight * 4 }} hidden={slotHeight < 6 && index % 2 !== 0 && index !== (timeRange.end - timeRange.start) / 60}>{String(timeRange.start / 60 + index).padStart(2, '0')}:00</span>)}</div>
       {days.map((day) => {
-        const layout = layoutDayTasks(filteredTasks.filter((task) => task.start && isSameDay(new Date(task.start), day)), resizePreview)
-        return <DroppableDayTrack day={day} guide={dragGuide} key={day.toISOString()}><div className="drop-slots">{slots.map((slotIndex) => { const slot = new Date(day); slot.setHours(WORK_START, slotIndex * SLOT_MINUTES, 0, 0); return <TimeSlot key={slotIndex} slot={slot} onClick={() => selectedTaskId && scheduleTask(selectedTaskId, slot)} /> })}</div><div className="event-layer">{layout.map((item) => <CalendarEvent key={item.task.id} item={item} duration={resizePreview?.id === item.task.id ? resizePreview.duration : item.task.duration} batchMode={batchMode} batchSelected={batchSelection.has(item.task.id)} onOpen={() => beginEdit(item.task)} onToggleBatch={() => toggleBatchTask(item.task.id)} onStatus={(status) => updateStatus(item.task.id, status)} onResize={(event) => startResize(event, item.task)} />)}</div></DroppableDayTrack>
+        const layout = layoutDayTasks(filteredTasks.filter((task) => task.start && isSameDay(new Date(task.start), day)), resizePreview, slotHeight, timeRange)
+        return <DroppableDayTrack day={day} guide={dragGuide} key={day.toISOString()}><div className="drop-slots">{slots.map((slotIndex) => { const slot = new Date(day); slot.setHours(0, timeRange.start + slotIndex * SLOT_MINUTES, 0, 0); return <TimeSlot key={slotIndex} slot={slot} onClick={() => selectedTaskId && scheduleTask(selectedTaskId, slot)} /> })}</div><div className="event-layer">{layout.map((item) => <CalendarEvent key={item.task.id} item={item} duration={resizePreview?.id === item.task.id ? resizePreview.duration : item.task.duration} batchMode={batchMode} batchSelected={batchSelection.has(item.task.id)} onOpen={() => beginEdit(item.task)} onToggleBatch={() => toggleBatchTask(item.task.id)} onStatus={(status) => updateStatus(item.task.id, status)} onResize={(event) => startResize(event, item.task)} />)}</div></DroppableDayTrack>
       })}
     </div>
   }
@@ -537,10 +653,9 @@ function App() {
     return <><div className="today-stats"><div><span>已完成</span><strong>{completedTodayTasks.length} / {todayTasks.length} 项</strong></div><div><span>计划时间</span><strong>{durationLabel(plannedMinutes)}</strong></div><div><span>完成时间</span><strong>{durationLabel(completedMinutes)}</strong></div></div>{overdueTasks.length > 0 && <section className="overdue-section"><div className="overdue-heading"><div><h3>以前未完成</h3><span>{overdueTasks.length} 项需要重新安排</span></div><button className="secondary-button" type="button" onClick={moveAllOverdue}>全部移到今天</button></div><div className="overdue-list">{overdueTasks.map((task) => <div className={`overdue-item color-${task.color}`} key={task.id}><span className="overdue-dot" /><div><strong>{task.title}</strong><small>{format(new Date(task.start!), 'M 月 d 日 HH:mm')} · {durationLabel(task.duration)}</small></div><button type="button" onClick={() => moveToToday(task.id)}>移到今天</button></div>)}</div></section>}<div ref={calendarScrollRef} className="calendar-surface today-timeline">{renderTimeline([today])}</div></>
   }
   function calendarBody() {
-    if (view === 'today') return renderToday()
     if (view === 'month') return <div className="calendar-surface">{renderMonth()}</div>
-    if (view === 'week') return <div ref={calendarScrollRef} className="calendar-surface">{renderTimeline(weekDays(anchor))}</div>
-    return <div ref={calendarScrollRef} className="calendar-surface view-day">{renderTimeline([anchor])}</div>
+    const body = view === 'today' ? renderToday() : <div ref={calendarScrollRef} className={`calendar-surface${view === 'day' ? ' view-day' : ''}`}>{renderTimeline(view === 'week' ? weekDays(anchor) : [anchor])}</div>
+    return <><CalendarZoom zoom={zoom} rangeLabel={timeRangeLabel(timeRange)} empty={focusedTasks.length === 0} disabled={draggingTaskId !== null || resizePreview !== null} onStep={(direction) => changeZoom(stepCalendarZoom(zoom, slotHeight, direction))} onChange={changeZoom} onToggleFocus={toggleFocus} />{body}</>
   }
 
   const totalMinutes = visibleTasks.reduce((sum, task) => sum + task.duration, 0)
@@ -551,12 +666,13 @@ function App() {
         <div className="brand"><span className="brand-mark"><CalendarDays size={18} /></span><span>WorkGrid</span></div>
         <div className="view-switcher" role="group" aria-label="日历视图">{(Object.keys(VIEW_LABELS) as ViewMode[]).map((mode) => <button key={mode} type="button" className={view === mode ? 'is-active' : ''} onClick={() => selectView(mode)}>{VIEW_LABELS[mode]}</button>)}</div>
         <div className="date-controls">
-          <InstallApp /><CloudSync tasks={tasks} setTasks={replaceTasksFromExternal} onNotify={notify} /><DataManagement tasks={tasks} canUndoImport={canUndoImport} onImport={importTasks} onUndoImport={undoLastImport} onNotify={notify} />
+          <InstallApp /><CloudSync tasks={tasks} setTasks={replaceTasksFromExternal} onNotify={notify} /><DataManagement tasks={tasks} canUndoImport={canUndoImport} onImport={importTasks} onUndoImport={undoLastImport} onNotify={notify} onOpenCourseImport={() => setCourseImportOpen(true)} canUndoCourseImport={canUndoCourseImport} onUndoCourseImport={undoLastCourseImport} />
           <button className="icon-button trash-button" type="button" aria-label={`回收站，${trashedTasks.length} 项`} title="回收站" onClick={() => setTrashOpen(true)}><Trash2 size={17} />{trashedTasks.length > 0 && <span>{trashedTasks.length > 99 ? '99+' : trashedTasks.length}</span>}</button>
           <span className="toolbar-divider" />
           {view !== 'today' && <><button className="icon-button" type="button" aria-label="上一周期" title="上一周期" onClick={() => setAnchor((date) => moveAnchor(date, view, -1))}><ChevronLeft size={18} /></button><button className="today-button" type="button" aria-label={`回到今天，当前选择 ${format(anchor, view === 'month' ? 'yyyy 年 M 月' : 'M 月 d 日')}`} onClick={() => setAnchor(new Date())}>{isSameDay(anchor, new Date()) ? '今天' : format(anchor, view === 'month' ? 'M 月' : 'M 月 d 日')}</button><button className="icon-button" type="button" aria-label="下一周期" title="下一周期" onClick={() => setAnchor((date) => moveAnchor(date, view, 1))}><ChevronRight size={18} /></button></>}
         </div>
       </header>
+      {courseImportOpen && <CourseImport tasks={tasks} canUndo={canUndoCourseImport} onApply={importCourses} onUndo={undoLastCourseImport} onClose={() => setCourseImportOpen(false)} />}
       <div className="workspace">
         <DroppableBacklog>
           <div className="panel-heading"><div><h1>待安排</h1><span>{unscheduled.length} 个方块</span></div>{selectedTask && !batchMode && <button className="clear-selection" type="button" onClick={() => setSelectedTaskId(null)}><X size={14} />取消选择</button>}</div>

@@ -5,11 +5,11 @@ export function parseDurationInput(value: string) {
   return Number.isInteger(duration) && duration >= 1 && duration <= 720 ? duration : null
 }
 
-export function dropDateFromPosition(day: Date, pointerY: number, trackTop: number, slotHeight: number, slotMinutes = 15) {
-  const slotCount = (24 * 60) / slotMinutes
-  const relativeY = Math.max(0, Math.min(slotCount * slotHeight - 1, pointerY - trackTop))
+export function dropDateFromPosition(day: Date, pointerY: number, trackTop: number, slotHeight: number, slotMinutes = 15, startMinutes = 0, endMinutes = 1440) {
+  const slotCount = (endMinutes - startMinutes) / slotMinutes
+  const relativeY = Math.max(0, Math.min(slotCount * slotHeight - 0.000001, pointerY - trackTop))
   const slotIndex = Math.floor(relativeY / slotHeight)
   const result = new Date(day)
-  result.setHours(0, slotIndex * slotMinutes, 0, 0)
+  result.setHours(0, startMinutes + slotIndex * slotMinutes, 0, 0)
   return result
 }

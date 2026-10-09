@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import {
   AlertTriangle,
+  CalendarDays,
   CheckCircle2,
   Database,
   Download,
@@ -31,6 +32,9 @@ interface DataManagementProps {
   onImport: (nextTasks: Task[], message: string) => boolean
   onUndoImport: () => void
   onNotify: (message: string) => void
+  onOpenCourseImport: () => void
+  canUndoCourseImport: boolean
+  onUndoCourseImport: () => void
 }
 
 function formatDateTime(value: string) {
@@ -59,6 +63,9 @@ export default function DataManagement({
   onImport,
   onUndoImport,
   onNotify,
+  onOpenCourseImport,
+  canUndoCourseImport,
+  onUndoCourseImport,
 }: DataManagementProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [dialog, setDialog] = useState<DialogMode>(null)
@@ -153,6 +160,11 @@ export default function DataManagement({
 
       {menuOpen && (
         <div className="data-menu" role="menu">
+          <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onOpenCourseImport() }}>
+            <CalendarDays size={16} aria-hidden="true" />
+            <span><strong>导入课表</strong><small>选择学校的 ICS 文件</small></span>
+          </button>
+          {canUndoCourseImport && <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onUndoCourseImport() }}><RotateCcw size={16} aria-hidden="true" /><span><strong>撤销上次课表导入</strong><small>只撤销课程，保留其他日程</small></span></button>}
           <button type="button" role="menuitem" onClick={() => openDialog('export')}>
             <Download size={16} aria-hidden="true" />
             <span><strong>导出备份</strong><small>保存到本机文件</small></span>

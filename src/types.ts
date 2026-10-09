@@ -36,6 +36,20 @@ export interface Task {
   deletedAt: string | null
   seriesId?: string | null
   recurrence?: RecurrenceRule | null
+  calendarImport?: CalendarImportSource
+}
+
+export interface CalendarImportSource {
+  calendarKey: string
+  eventKey: string
+  course: string
+  location: string
+  teacher: string
+  teachingClass: string
+  // Last imported values: local edits can be detected without using createdAt.
+  originalTitle: string
+  originalStart: string
+  originalDuration: number
 }
 
 export interface TaskDraft {
@@ -47,7 +61,7 @@ export interface TaskDraft {
 
 export interface WorkGridBackup {
   format: 'workgrid-backup'
-  schemaVersion: 6
+  schemaVersion: 7
   appVersion: string
   exportedAt: string
   taskCount: number
