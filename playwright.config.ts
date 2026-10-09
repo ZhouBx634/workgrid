@@ -1,5 +1,9 @@
 import { defineConfig, devices } from '@playwright/test'
 
+// Fixtures run in Node; keep their local dates aligned with the browser on every host.
+const testTimezone = 'Asia/Shanghai'
+process.env.TZ = testTimezone
+
 export default defineConfig({
   testDir: './tests',
   fullyParallel: false,
@@ -9,7 +13,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:4187',
     locale: 'zh-CN',
-    timezoneId: 'Asia/Shanghai',
+    timezoneId: testTimezone,
     trace: 'retain-on-failure',
   },
   webServer: {
