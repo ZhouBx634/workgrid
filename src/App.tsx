@@ -9,7 +9,7 @@ import CloudSync from './components/CloudSync'
 import InstallApp from './components/InstallApp'
 import CourseImport from './components/CourseImport'
 import CalendarZoom from './components/CalendarZoom'
-import { DEFAULT_SLOT_HEIGHT, ZOOM_STORAGE_KEY, fitSlotHeight, loadCalendarZoom, stepCalendarZoom, type CalendarZoom as Zoom } from './calendarZoom'
+import { DEFAULT_SLOT_HEIGHT, ZOOM_STORAGE_KEY, fitSlotHeight, focusedTimeRange, loadCalendarZoom, stepCalendarZoom, timeRangeLabel, type CalendarZoom as Zoom, type TimeRange } from './calendarZoom'
 import { applyCourseImport, undoCourseImport, type CourseOccurrence } from './courseImport'
 import { clearCourseRecovery, loadCourseRecovery, saveCourseRecovery } from './courseRecovery'
 import { dueEndReminderTasks, dueReminderTasks, reminderLabel } from './reminders'
@@ -31,9 +31,6 @@ const REMINDER_OPTIONS: Array<{ value: number | null; label: string }> = [
 ]
 const EMPTY_DRAFT: TaskDraft = { title: '', color: 'blue', duration: 60, tags: [] }
 const SLOT_MINUTES = 15
-const WORK_START = 0
-const WORK_END = 24
-const SLOT_COUNT = ((WORK_END - WORK_START) * 60) / SLOT_MINUTES
 
 function durationLabel(minutes: number) {
   if (minutes < 60) return `${minutes} 分钟`
@@ -82,9 +79,9 @@ function TaskCard({ task, selected, batchMode, batchSelected, onSelect, onEdit }
 
 interface LaidOutTask { task: Task; lane: number; laneCount: number; top: number; height: number }
 
-function layoutDayTasks(tasks: Task[], preview: { id: string; duration: number } | null, slotHeight: number): LaidOutTask[] {
-  const dayStart = WORK_START * 60
-  const dayEnd = WORK_END * 60
+function layoutDayTasks(tasks: Task[], preview: { id: string; duration: number } | null, slotHeight: number, range: TimeRange): LaidOutTask[] {
+  const dayStart = range.start
+  const dayEnd = range.end
   const candidates = tasks.filter((task) => task.start).map((task) => {
     const start = new Date(task.start!)
     const startMinutes = start.getHours() * 60 + start.getMinutes()
@@ -210,9 +207,10 @@ function App() {
   const [dragPreviewOffsetY, setDragPreviewOffsetY] = useState(0)
   const [zoom, setZoom] = useState<Zoom>(loadCalendarZoom)
   const [overviewSlotHeight, setOverviewSlotHeight] = useState(DEFAULT_SLOT_HEIGHT / 4)
-  const slotHeight = zoom === 'fit' ? overviewSlotHeight : DEFAULT_SLOT_HEIGHT * zoom / 100
+  const [isZoomAnimating, setIsZoomAnimating] = useState(false)
+  const frozenFocusRangeRef = useRef<TimeRange>({ start: 0, end: 1440 })
   const zoomFocusMinutesRef = useRef<number | null>(null)
-  const previousTimelineRef = useRef<{ slotHeight: number; view: ViewMode; anchor: number } | null>(null)
+  const previousTimelineRef = useRef<{ slotHeight: number; rangeStart: number; scrollTop: number; zoom: Zoom; view: ViewMode; anchor: number } | null>(null)
   const calendarScrollRef = useRef<HTMLDivElement>(null)
   const tasksRef = useRef(tasks)
   const dragGuideRef = useRef<DragGuide | null>(null)
@@ -244,23 +242,6 @@ function App() {
     window.addEventListener('resize', measureOverview)
     return () => { observer.disconnect(); window.removeEventListener('resize', measureOverview) }
   }, [view])
-  useLayoutEffect(() => {
-    const surface = calendarScrollRef.current
-    if (view === 'month' || !surface) { previousTimelineRef.current = null; return }
-    const previous = previousTimelineRef.current
-    if (zoom === 'fit') surface.scrollTop = 0
-    else if (!previous || previous.view !== view || previous.anchor !== anchor.getTime()) surface.scrollTop = 7.5 * 4 * slotHeight - 24
-    else if (zoomFocusMinutesRef.current !== null) surface.scrollTop = zoomFocusMinutesRef.current / SLOT_MINUTES * slotHeight - (surface.clientHeight - 56) / 2
-    else if (previous.slotHeight !== slotHeight) surface.scrollTop *= slotHeight / previous.slotHeight
-    zoomFocusMinutesRef.current = null
-    previousTimelineRef.current = { slotHeight, view, anchor: anchor.getTime() }
-  }, [slotHeight, view, anchor, zoom])
-
-  function changeZoom(next: Zoom) {
-    const surface = calendarScrollRef.current
-    if (surface) zoomFocusMinutesRef.current = (surface.scrollTop + (surface.clientHeight - 56) / 2) / slotHeight * SLOT_MINUTES
-    setZoom(next)
-  }
   useEffect(() => {
     function checkReminders() {
       const dueStarts = dueReminderTasks(tasks).filter((task) => {
@@ -319,6 +300,59 @@ function App() {
   const todayTasks = filteredTasks.filter((task) => task.start && isSameDay(new Date(task.start), today))
   const completedTodayTasks = todayTasks.filter((task) => task.status === 'completed')
   const overdueTasks = filteredTasks.filter((task) => task.start && isBefore(new Date(task.start), today) && task.status !== 'completed')
+
+  const focusedTasks = view === 'today' ? todayTasks : visibleTasks
+  const candidateRange = focusedTimeRange(focusedTasks)
+  // Keep the time-to-pixel mapping fixed throughout a drag or resize, including cloud updates.
+  if (!draggingTaskId && !resizePreview) frozenFocusRangeRef.current = candidateRange
+  const timeRange = zoom === 'focus' ? frozenFocusRangeRef.current : { start: 0, end: 1440 }
+  const slotCount = (timeRange.end - timeRange.start) / SLOT_MINUTES
+  const slotHeight = typeof zoom === 'number' ? DEFAULT_SLOT_HEIGHT * zoom / 100 : overviewSlotHeight * 96 / slotCount
+
+  useLayoutEffect(() => {
+    const surface = calendarScrollRef.current
+    if (view === 'month' || !surface) { previousTimelineRef.current = null; return }
+    const previous = previousTimelineRef.current
+    const sameView = previous?.view === view && previous.anchor === anchor.getTime()
+    if (typeof zoom !== 'number') surface.scrollTop = 0
+    else if (!sameView) surface.scrollTop = 7.5 * 4 * slotHeight - 24
+    else if (zoomFocusMinutesRef.current !== null) surface.scrollTop = zoomFocusMinutesRef.current / SLOT_MINUTES * slotHeight - (surface.clientHeight - 56) / 2
+    else if (previous.slotHeight !== slotHeight) surface.scrollTop *= slotHeight / previous.slotHeight
+    zoomFocusMinutesRef.current = null
+    previousTimelineRef.current = { slotHeight, rangeStart: timeRange.start, scrollTop: surface.scrollTop, zoom, view, anchor: anchor.getTime() }
+    const geometryChanged = previous && (previous.slotHeight !== slotHeight || previous.rangeStart !== timeRange.start)
+    if (!sameView || !geometryChanged || (previous.zoom !== 'focus' && zoom !== 'focus') || draggingTaskId || resizePreview || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+
+    // Animate a visual-only transform; the final layout and all scheduling coordinates stay exact.
+    const offset = (timeRange.start - previous.rangeStart) / SLOT_MINUTES * previous.slotHeight - previous.scrollTop + surface.scrollTop
+    const scale = previous.slotHeight / slotHeight
+    const timeline = surface.querySelector<HTMLElement>('.duration-timeline')!
+    timeline.inert = true
+    surface.dataset.zoomAnimating = 'true'
+    setIsZoomAnimating(true)
+    const animations = Array.from(surface.querySelectorAll<HTMLElement>('.day-track, .time-rail')).map((element) => element.animate([
+      { transform: `translateY(${offset}px) scaleY(${scale})` },
+      { transform: 'translateY(0px) scaleY(1)' },
+    ], { duration: 380, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' }))
+    let active = true
+    function unlock() {
+      timeline.inert = false
+      delete surface!.dataset.zoomAnimating
+      setIsZoomAnimating(false)
+    }
+    void Promise.all(animations.map((animation) => animation.finished)).then(() => { if (active) unlock() }).catch(() => { /* Replacement transitions handle cancellation. */ })
+    return () => { active = false; animations.forEach((animation) => animation.cancel()); unlock() }
+  }, [slotHeight, timeRange.start, view, anchor, zoom, draggingTaskId, resizePreview?.id])
+
+  function changeZoom(next: Zoom) {
+    if (next === zoom) return
+    const surface = calendarScrollRef.current
+    if (surface) {
+      zoomFocusMinutesRef.current = timeRange.start + (surface.scrollTop + (surface.clientHeight - 56) / 2) / slotHeight * SLOT_MINUTES
+      if (previousTimelineRef.current) previousTimelineRef.current.scrollTop = surface.scrollTop
+    }
+    setZoom(next)
+  }
 
   function notify(message: string) { setUndoEntry(null); setToast(message) }
   function commitTaskChange(label: string, message: string, update: (current: Task[]) => Task[]) {
@@ -393,13 +427,13 @@ function App() {
     const track = calendarScrollRef.current?.querySelector<HTMLElement>(`.day-track[data-day="${CSS.escape(target.day)}"]`)
     const trackTop = track?.getBoundingClientRect().top ?? event.over.rect.top
     const previewTop = event.active.rect.current.translated?.top ?? initialY + event.delta.y
-    return { day: target.day, trackTop, previewTop, slot: dropDateFromPosition(new Date(target.day), previewTop, trackTop, slotHeight, SLOT_MINUTES) }
+    return { day: target.day, trackTop, previewTop, slot: dropDateFromPosition(new Date(target.day), previewTop, trackTop, slotHeight, SLOT_MINUTES, timeRange.start, timeRange.end) }
   }
   function handleDragMove(event: DragMoveEvent) {
     const result = dragSlotFromEvent(event)
     if (!result) { dragGuideRef.current = null; setDragGuide(null); setDragPreviewOffsetY(0); return }
     const minutes = result.slot.getHours() * 60 + result.slot.getMinutes()
-    const guideTop = (minutes / SLOT_MINUTES) * slotHeight
+    const guideTop = ((minutes - timeRange.start) / SLOT_MINUTES) * slotHeight
     const guide = { day: result.day, slot: result.slot, top: guideTop }
     dragGuideRef.current = guide
     setDragGuide(guide)
@@ -585,14 +619,14 @@ function App() {
   }
 
   function renderTimeline(days: Date[]) {
-    const slots = Array.from({ length: SLOT_COUNT }, (_, index) => index)
-    return <div className="duration-timeline" style={{ '--day-count': days.length, '--slot-height': `${slotHeight}px`, '--slot-count': SLOT_COUNT } as React.CSSProperties}>
+    const slots = Array.from({ length: slotCount }, (_, index) => index)
+    return <div className="duration-timeline" data-range-start={timeRange.start} data-range-end={timeRange.end} aria-busy={isZoomAnimating} style={{ '--day-count': days.length, '--slot-height': `${slotHeight}px`, '--slot-count': slotCount } as React.CSSProperties}>
       <div className="timeline-header-corner" />
       {days.map((day) => <div className={`day-heading${isSameDay(day, new Date()) ? ' is-today' : ''}`} key={`heading-${day.toISOString()}`}><span>{format(day, 'EEE', { locale: zhCN })}</span><strong>{format(day, 'd')}</strong></div>)}
-      <div className="time-rail">{Array.from({ length: WORK_END - WORK_START + 1 }, (_, index) => <span key={index} style={{ top: index * slotHeight * 4 }} hidden={slotHeight < 6 && index % 2 !== 0}>{String(WORK_START + index).padStart(2, '0')}:00</span>)}</div>
+      <div className="time-rail">{Array.from({ length: (timeRange.end - timeRange.start) / 60 + 1 }, (_, index) => <span key={index} style={{ top: index * slotHeight * 4 }} hidden={slotHeight < 6 && index % 2 !== 0 && index !== (timeRange.end - timeRange.start) / 60}>{String(timeRange.start / 60 + index).padStart(2, '0')}:00</span>)}</div>
       {days.map((day) => {
-        const layout = layoutDayTasks(filteredTasks.filter((task) => task.start && isSameDay(new Date(task.start), day)), resizePreview, slotHeight)
-        return <DroppableDayTrack day={day} guide={dragGuide} key={day.toISOString()}><div className="drop-slots">{slots.map((slotIndex) => { const slot = new Date(day); slot.setHours(WORK_START, slotIndex * SLOT_MINUTES, 0, 0); return <TimeSlot key={slotIndex} slot={slot} onClick={() => selectedTaskId && scheduleTask(selectedTaskId, slot)} /> })}</div><div className="event-layer">{layout.map((item) => <CalendarEvent key={item.task.id} item={item} duration={resizePreview?.id === item.task.id ? resizePreview.duration : item.task.duration} batchMode={batchMode} batchSelected={batchSelection.has(item.task.id)} onOpen={() => beginEdit(item.task)} onToggleBatch={() => toggleBatchTask(item.task.id)} onStatus={(status) => updateStatus(item.task.id, status)} onResize={(event) => startResize(event, item.task)} />)}</div></DroppableDayTrack>
+        const layout = layoutDayTasks(filteredTasks.filter((task) => task.start && isSameDay(new Date(task.start), day)), resizePreview, slotHeight, timeRange)
+        return <DroppableDayTrack day={day} guide={dragGuide} key={day.toISOString()}><div className="drop-slots">{slots.map((slotIndex) => { const slot = new Date(day); slot.setHours(0, timeRange.start + slotIndex * SLOT_MINUTES, 0, 0); return <TimeSlot key={slotIndex} slot={slot} onClick={() => selectedTaskId && scheduleTask(selectedTaskId, slot)} /> })}</div><div className="event-layer">{layout.map((item) => <CalendarEvent key={item.task.id} item={item} duration={resizePreview?.id === item.task.id ? resizePreview.duration : item.task.duration} batchMode={batchMode} batchSelected={batchSelection.has(item.task.id)} onOpen={() => beginEdit(item.task)} onToggleBatch={() => toggleBatchTask(item.task.id)} onStatus={(status) => updateStatus(item.task.id, status)} onResize={(event) => startResize(event, item.task)} />)}</div></DroppableDayTrack>
       })}
     </div>
   }
@@ -611,7 +645,7 @@ function App() {
   function calendarBody() {
     if (view === 'month') return <div className="calendar-surface">{renderMonth()}</div>
     const body = view === 'today' ? renderToday() : <div ref={calendarScrollRef} className={`calendar-surface${view === 'day' ? ' view-day' : ''}`}>{renderTimeline(view === 'week' ? weekDays(anchor) : [anchor])}</div>
-    return <><CalendarZoom zoom={zoom} disabled={draggingTaskId !== null || resizePreview !== null} onStep={(direction) => changeZoom(stepCalendarZoom(zoom, slotHeight, direction))} onChange={changeZoom} />{body}</>
+    return <><CalendarZoom zoom={zoom} rangeLabel={timeRangeLabel(timeRange)} empty={focusedTasks.length === 0} disabled={draggingTaskId !== null || resizePreview !== null} onStep={(direction) => changeZoom(stepCalendarZoom(zoom, slotHeight, direction))} onChange={changeZoom} />{body}</>
   }
 
   const totalMinutes = visibleTasks.reduce((sum, task) => sum + task.duration, 0)

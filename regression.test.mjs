@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { dropDateFromPosition, parseDurationInput } from './src/scheduling.ts'
 import { dueEndReminderTasks, dueReminderTasks } from './src/reminders.ts'
-import { DEFAULT_SLOT_HEIGHT, fitSlotHeight, parseCalendarZoom, stepCalendarZoom } from './src/calendarZoom.ts'
+import { DEFAULT_SLOT_HEIGHT, fitSlotHeight, focusedTimeRange, parseCalendarZoom, stepCalendarZoom, timeRangeLabel } from './src/calendarZoom.ts'
 
 for (const value of [null, '', '0', 'NaN', '10', '200', '37.5']) assert.equal(parseCalendarZoom(value), 100)
 assert.equal(parseCalendarZoom('fit'), 'fit')
+assert.equal(parseCalendarZoom('focus'), 'focus')
 assert.equal(parseCalendarZoom('25'), 25)
 assert.equal(parseCalendarZoom('150'), 150)
 assert.equal(fitSlotHeight(648), 6)
@@ -14,6 +15,15 @@ assert.equal(stepCalendarZoom(25, 5.5, -1), 25)
 assert.equal(stepCalendarZoom(150, 33, 1), 150)
 assert.equal(stepCalendarZoom('fit', 6, 1), 50)
 assert.equal(stepCalendarZoom('fit', 6, -1), 25)
+assert.equal(stepCalendarZoom('focus', 44, 1), 150)
+assert.deepEqual(focusedTimeRange([]), { start: 0, end: 1440 })
+const timed = (hour, minutes, duration, extra = {}) => ({ start: new Date(2026, 9, 9, hour, minutes).toISOString(), duration, ...extra })
+assert.deepEqual(focusedTimeRange([timed(8, 30, 90), timed(19, 0, 140)]), { start: 480, end: 1320 })
+assert.equal(timeRangeLabel({ start: 480, end: 1320 }), '08:00–22:00')
+assert.deepEqual(focusedTimeRange([timed(0, 0, 1)]), { start: 0, end: 240 })
+assert.deepEqual(focusedTimeRange([timed(23, 59, 120)]), { start: 1200, end: 1440 })
+assert.deepEqual(focusedTimeRange([timed(10, 12, 56)]), { start: 480, end: 720 })
+assert.deepEqual(focusedTimeRange([{ start: null, duration: 60 }, timed(3, 0, 60, { deletedAt: '2026-10-09' }), { start: 'invalid', duration: 60 }]), { start: 0, end: 1440 })
 
 assert.equal(parseDurationInput(''), null)
 assert.equal(parseDurationInput('0'), null)
@@ -33,6 +43,12 @@ assert.deepEqual([lastSlotDrop.getHours(), lastSlotDrop.getMinutes()], [23, 45])
 for (const height of [5.5, 11, 16.5, 22, 33, fitSlotHeight(648)]) {
   const scaledDrop = dropDateFromPosition(day, 100 + 41.5 * height, 100, height)
   assert.deepEqual([scaledDrop.getHours(), scaledDrop.getMinutes()], [10, 15])
+  const focusedDrop = dropDateFromPosition(day, 100 + 9.5 * height, 100, height, 15, 480, 1320)
+  assert.deepEqual([focusedDrop.getHours(), focusedDrop.getMinutes()], [10, 15])
+  const focusedFirst = dropDateFromPosition(day, -999, 100, height, 15, 480, 1320)
+  const focusedLast = dropDateFromPosition(day, 99999, 100, height, 15, 480, 1320)
+  assert.deepEqual([focusedFirst.getHours(), focusedFirst.getMinutes()], [8, 0])
+  assert.deepEqual([focusedLast.getHours(), focusedLast.getMinutes()], [21, 45])
 }
 
 const scheduledTask = {

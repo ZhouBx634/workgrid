@@ -132,10 +132,13 @@ test('zoom limits, month view, and centered time remain stable', async ({ page }
   await expect(page.getByLabel('日历缩放比例')).toHaveText('150%')
 })
 
-for (const zoom of ['50%', '全天', '150%']) {
+for (const zoom of ['50%', '全天', '150%', '聚焦']) {
   test(`dragging at ${zoom} aligns preview, guide, and saved time on desktop and touch`, async ({ page }, testInfo) => {
-    await setup(page, [task('拖动任务', null), task('原有日程', 23)])
-    if (zoom === '全天') await page.getByRole('button', { name: '全天总览' }).click()
+    await setup(page, [task('拖动任务', null), task('原有日程', 23), ...(zoom === '聚焦' ? [task('上午锚点', 8)] : [])])
+    if (zoom === '聚焦') {
+      await page.getByRole('button', { name: '聚焦日程' }).click()
+      await expect(page.locator('.duration-timeline')).toHaveAttribute('aria-busy', 'false')
+    } else if (zoom === '全天') await page.getByRole('button', { name: '全天总览' }).click()
     else for (let i = 0; i < 2; i++) await page.getByRole('button', { name: zoom === '50%' ? '缩小日历' : '放大日历', exact: true }).click()
     const slotHeight = await height(page)
     await page.locator('.calendar-surface').evaluate((element, size) => { element.scrollTop = 38 * size - 100 }, slotHeight)
@@ -158,7 +161,8 @@ for (const zoom of ['50%', '全天', '150%']) {
     await expect(guide).toBeVisible()
     const guideTime = await guide.getAttribute('data-time')
     const [hours, minutes] = guideTime!.split(':').map(Number)
-    expect(await guide.evaluate((element) => Number.parseFloat((element as HTMLElement).style.top))).toBeCloseTo((hours * 60 + minutes) / 15 * slotHeight)
+    const rangeStart = Number(await page.locator('.duration-timeline').getAttribute('data-range-start'))
+    expect(await guide.evaluate((element) => Number.parseFloat((element as HTMLElement).style.top))).toBeCloseTo((hours * 60 + minutes - rangeStart) / 15 * slotHeight)
     await expect.poll(async () => Math.abs((await guide.boundingBox())!.y - (await page.locator('.drag-overlay').boundingBox())!.y)).toBeLessThanOrEqual(3)
     await expect(page.locator('.drag-overlay')).toHaveCount(1)
     await expect(page.getByRole('button', { name: '放大日历', exact: true })).toBeDisabled()
@@ -173,11 +177,14 @@ for (const zoom of ['50%', '全天', '150%']) {
   })
 }
 
-for (const zoom of ['50%', '全天', '150%']) {
+for (const zoom of ['50%', '全天', '150%', '聚焦']) {
   test(`duration resize uses the scaled height at ${zoom}`, async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop-chromium', 'Resize handle is desktop-only')
     await setup(page, [task('调整任务', 9)])
-    if (zoom === '全天') await page.getByRole('button', { name: '全天总览' }).click()
+    if (zoom === '聚焦') {
+      await page.getByRole('button', { name: '聚焦日程' }).click()
+      await expect(page.locator('.duration-timeline')).toHaveAttribute('aria-busy', 'false')
+    } else if (zoom === '全天') await page.getByRole('button', { name: '全天总览' }).click()
     else for (let i = 0; i < 2; i++) await page.getByRole('button', { name: zoom === '50%' ? '缩小日历' : '放大日历', exact: true }).click()
     const slotHeight = await height(page)
     const handle = page.getByRole('button', { name: '调整时长' })
