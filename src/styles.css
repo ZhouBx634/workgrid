@@ -132,7 +132,16 @@ input:focus, select:focus { border-color: #81909b; background: var(--surface); }
 .batch-actions select { width: auto; min-width: 104px; height: 32px; background: var(--surface-subtle); font-size: 12px; }
 .batch-delete { width: auto; min-width: 76px; height: 32px; display: inline-flex; gap: 5px; padding: 0 9px; }
 .batch-delete:disabled { cursor: not-allowed; opacity: .45; }
-.calendar-surface { overflow: auto; max-height: calc(100vh - 132px); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
+.calendar-surface { overflow: auto; max-height: calc(100vh - 178px); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
+.calendar-zoom { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; font-size: 12px; }
+.zoom-label { margin-right: 4px; color: var(--muted); }
+.calendar-zoom button { min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); white-space: nowrap; }
+.calendar-zoom button:hover:not(:disabled) { border-color: #668baa; background: #edf3f8; }
+.calendar-zoom button:disabled { opacity: .45; cursor: not-allowed; }
+.calendar-zoom button.is-active { border-color: #668baa; background: #edf3f8; color: #246b9f; }
+.calendar-zoom .zoom-icon { display: grid; place-items: center; width: 32px; padding: 0; }
+.calendar-zoom output { min-width: 42px; text-align: center; font-variant-numeric: tabular-nums; }
+.calendar-zoom .zoom-reset { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
 
 .timeline { --day-count: 7; min-width: 720px; display: grid; grid-template-columns: 52px repeat(var(--day-count), minmax(92px, 1fr)); }
 .timeline-corner { position: sticky; top: 0; z-index: 4; min-height: 56px; background: var(--surface); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
@@ -178,6 +187,8 @@ input:focus, select:focus { border-color: #81909b; background: var(--surface); }
   color: var(--muted);
   font-size: 11px;
 }
+.time-rail span:first-child { transform: translateY(2px); }
+.time-rail span:last-child { transform: translateY(-100%); }
 .day-track {
   position: relative;
   height: calc(var(--slot-height) * var(--slot-count));
@@ -215,6 +226,12 @@ input:focus, select:focus { border-color: #81909b; background: var(--surface); }
 .event-main strong, .event-main span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .event-main strong { font-size: 12px; font-weight: 600; }
 .event-main span { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.calendar-event.is-compact { padding: 2px 4px; border-radius: 3px; }
+.calendar-event.is-compact .event-main strong { font-size: 11px; line-height: 13px; }
+.calendar-event.is-compact .course-event-details, .calendar-event.is-compact .event-actions { display: none; }
+.calendar-event.is-tiny { padding: 0 4px; }
+.calendar-event.is-tiny .event-main span { display: none; }
+.calendar-event.is-tiny .event-main strong { font-size: 10px; line-height: 11px; }
 .event-actions { position: absolute; top: 3px; right: 3px; display: flex; gap: 2px; opacity: 0; }
 .calendar-event:hover .event-actions, .calendar-event:focus-within .event-actions { opacity: 1; }
 .event-actions button { width: 23px; height: 23px; display: grid; place-items: center; padding: 0; color: var(--text); border: 0; border-radius: 4px; background: color-mix(in srgb, var(--surface) 88%, transparent); }
@@ -466,6 +483,8 @@ input:focus, select:focus { border-color: #81909b; background: var(--surface); }
   .empty-state { min-height: 72px; }
   .calendar-panel { padding: 14px 12px; }
   .calendar-surface { max-height: 72vh; }
+  .calendar-zoom button { min-height: 36px; }
+  .calendar-zoom .zoom-icon { width: 36px; }
   .resize-handle { display: none; }
   .event-actions { opacity: 1; }
   .calendar-heading-actions { align-items: flex-end; flex-direction: column; gap: 5px; }

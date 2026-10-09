@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { DndContext, DragOverlay, MouseSensor, TouchSensor, pointerWithin, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragMoveEvent, type DragStartEvent } from '@dnd-kit/core'
 import { Bell, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, Clock3, GripVertical, ListChecks, Pause, Pencil, Play, Plus, RotateCcw, Search, Trash2, X } from 'lucide-react'
 import { addMinutes, format, isBefore, isSameDay, startOfDay } from 'date-fns'
@@ -8,6 +8,8 @@ import DataManagement from './components/DataManagement'
 import CloudSync from './components/CloudSync'
 import InstallApp from './components/InstallApp'
 import CourseImport from './components/CourseImport'
+import CalendarZoom from './components/CalendarZoom'
+import { DEFAULT_SLOT_HEIGHT, ZOOM_STORAGE_KEY, fitSlotHeight, loadCalendarZoom, stepCalendarZoom, type CalendarZoom as Zoom } from './calendarZoom'
 import { applyCourseImport, undoCourseImport, type CourseOccurrence } from './courseImport'
 import { clearCourseRecovery, loadCourseRecovery, saveCourseRecovery } from './courseRecovery'
 import { dueEndReminderTasks, dueReminderTasks, reminderLabel } from './reminders'
@@ -29,7 +31,6 @@ const REMINDER_OPTIONS: Array<{ value: number | null; label: string }> = [
 ]
 const EMPTY_DRAFT: TaskDraft = { title: '', color: 'blue', duration: 60, tags: [] }
 const SLOT_MINUTES = 15
-const SLOT_HEIGHT = 22
 const WORK_START = 0
 const WORK_END = 24
 const SLOT_COUNT = ((WORK_END - WORK_START) * 60) / SLOT_MINUTES
@@ -81,7 +82,7 @@ function TaskCard({ task, selected, batchMode, batchSelected, onSelect, onEdit }
 
 interface LaidOutTask { task: Task; lane: number; laneCount: number; top: number; height: number }
 
-function layoutDayTasks(tasks: Task[], preview: { id: string; duration: number } | null): LaidOutTask[] {
+function layoutDayTasks(tasks: Task[], preview: { id: string; duration: number } | null, slotHeight: number): LaidOutTask[] {
   const dayStart = WORK_START * 60
   const dayEnd = WORK_END * 60
   const candidates = tasks.filter((task) => task.start).map((task) => {
@@ -110,7 +111,8 @@ function layoutDayTasks(tasks: Task[], preview: { id: string; duration: number }
     assignments.forEach(({ item, lane }) => {
       const visibleStart = Math.max(item.startMinutes, dayStart)
       const visibleEnd = Math.min(item.endMinutes, dayEnd)
-      result.push({ task: item.task, lane, laneCount: laneEnds.length, top: ((visibleStart - dayStart) / SLOT_MINUTES) * SLOT_HEIGHT, height: Math.max(SLOT_HEIGHT, ((visibleEnd - visibleStart) / SLOT_MINUTES) * SLOT_HEIGHT) })
+      const height = Math.min(((dayEnd - visibleStart) / SLOT_MINUTES) * slotHeight, Math.max(slotHeight, ((visibleEnd - visibleStart) / SLOT_MINUTES) * slotHeight))
+      result.push({ task: item.task, lane, laneCount: laneEnds.length, top: ((visibleStart - dayStart) / SLOT_MINUTES) * slotHeight, height })
     })
     index = next
   }
@@ -139,7 +141,7 @@ function CalendarEvent({ item, duration, batchMode, batchSelected, onOpen, onTog
   const end = addMinutes(start, duration)
   const style = { top: item.top, height: item.height, left: `calc(${(item.lane / item.laneCount) * 100}% + 3px)`, width: `calc(${100 / item.laneCount}% - 6px)` }
   return (
-    <article ref={setNodeRef} className={`calendar-event color-${task.color} status-${task.status}${batchSelected ? ' is-batch-selected' : ''}${isDragging ? ' is-dragging' : ''}`} style={style} aria-label={`${task.title}，${STATUS_LABELS[task.status]}，${format(start, 'HH:mm')} 至 ${format(end, 'HH:mm')}`} onClick={(event) => { event.stopPropagation(); batchMode ? onToggleBatch() : onOpen() }} {...attributes} {...(!batchMode ? listeners : {})}>
+    <article ref={setNodeRef} className={`calendar-event color-${task.color} status-${task.status}${item.height < 42 ? ' is-compact' : ''}${item.height < 30 ? ' is-tiny' : ''}${batchSelected ? ' is-batch-selected' : ''}${isDragging ? ' is-dragging' : ''}`} style={style} title={`${task.title} · ${format(start, 'HH:mm')} - ${format(end, 'HH:mm')}`} aria-label={`${task.title}，${STATUS_LABELS[task.status]}，${format(start, 'HH:mm')} 至 ${format(end, 'HH:mm')}`} onClick={(event) => { event.stopPropagation(); batchMode ? onToggleBatch() : onOpen() }} {...attributes} {...(!batchMode ? listeners : {})}>
       {batchMode && <SelectionMark selected={batchSelected} />}
       <div className="event-main"><strong>{task.title}</strong><span>{format(start, 'HH:mm')} - {format(end, 'HH:mm')}</span>{task.calendarImport && <small className="course-event-details" title={[task.calendarImport.location, task.calendarImport.teacher, task.calendarImport.teachingClass].filter(Boolean).join(' · ')}>{[task.calendarImport.location, task.calendarImport.teacher].filter(Boolean).join(' · ')}</small>}</div>
       {!batchMode && <div className="event-actions" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>{task.status === 'completed' ? <button type="button" aria-label="重新打开" title="重新打开" onClick={() => onStatus('todo')}><RotateCcw size={13} /></button> : <><button type="button" aria-label={task.status === 'in-progress' ? '暂停' : '开始'} title={task.status === 'in-progress' ? '暂停' : '开始'} onClick={() => onStatus(task.status === 'in-progress' ? 'todo' : 'in-progress')}>{task.status === 'in-progress' ? <Pause size={13} /> : <Play size={13} />}</button><button type="button" aria-label="完成" title="完成" onClick={() => onStatus('completed')}><Check size={14} /></button></>}</div>}
@@ -206,6 +208,11 @@ function App() {
   const [batchSelection, setBatchSelection] = useState<Set<string>>(new Set())
   const [dragGuide, setDragGuide] = useState<DragGuide | null>(null)
   const [dragPreviewOffsetY, setDragPreviewOffsetY] = useState(0)
+  const [zoom, setZoom] = useState<Zoom>(loadCalendarZoom)
+  const [overviewSlotHeight, setOverviewSlotHeight] = useState(DEFAULT_SLOT_HEIGHT / 4)
+  const slotHeight = zoom === 'fit' ? overviewSlotHeight : DEFAULT_SLOT_HEIGHT * zoom / 100
+  const zoomFocusMinutesRef = useRef<number | null>(null)
+  const previousTimelineRef = useRef<{ slotHeight: number; view: ViewMode; anchor: number } | null>(null)
   const calendarScrollRef = useRef<HTMLDivElement>(null)
   const tasksRef = useRef(tasks)
   const dragGuideRef = useRef<DragGuide | null>(null)
@@ -220,10 +227,40 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [toast, undoEntry])
   useEffect(() => {
-    if (view === 'month') return
-    const frame = window.requestAnimationFrame(() => { if (calendarScrollRef.current) calendarScrollRef.current.scrollTop = 7.5 * 4 * SLOT_HEIGHT - 24 })
-    return () => window.cancelAnimationFrame(frame)
-  }, [view, anchor])
+    try { localStorage.setItem(ZOOM_STORAGE_KEY, String(zoom)) } catch { /* Zoom remains usable if storage is unavailable. */ }
+  }, [zoom])
+  useLayoutEffect(() => {
+    const surface = calendarScrollRef.current
+    if (view === 'month' || !surface) return
+    function measureOverview() {
+      if (!surface) return
+      const maxHeight = Number.parseFloat(getComputedStyle(surface).maxHeight)
+      const headerHeight = surface.querySelector('.timeline-header-corner')?.getBoundingClientRect().height ?? 56
+      if (Number.isFinite(maxHeight)) setOverviewSlotHeight(fitSlotHeight(maxHeight, headerHeight))
+    }
+    measureOverview()
+    const observer = new ResizeObserver(measureOverview)
+    observer.observe(surface)
+    window.addEventListener('resize', measureOverview)
+    return () => { observer.disconnect(); window.removeEventListener('resize', measureOverview) }
+  }, [view])
+  useLayoutEffect(() => {
+    const surface = calendarScrollRef.current
+    if (view === 'month' || !surface) { previousTimelineRef.current = null; return }
+    const previous = previousTimelineRef.current
+    if (zoom === 'fit') surface.scrollTop = 0
+    else if (!previous || previous.view !== view || previous.anchor !== anchor.getTime()) surface.scrollTop = 7.5 * 4 * slotHeight - 24
+    else if (zoomFocusMinutesRef.current !== null) surface.scrollTop = zoomFocusMinutesRef.current / SLOT_MINUTES * slotHeight - (surface.clientHeight - 56) / 2
+    else if (previous.slotHeight !== slotHeight) surface.scrollTop *= slotHeight / previous.slotHeight
+    zoomFocusMinutesRef.current = null
+    previousTimelineRef.current = { slotHeight, view, anchor: anchor.getTime() }
+  }, [slotHeight, view, anchor, zoom])
+
+  function changeZoom(next: Zoom) {
+    const surface = calendarScrollRef.current
+    if (surface) zoomFocusMinutesRef.current = (surface.scrollTop + (surface.clientHeight - 56) / 2) / slotHeight * SLOT_MINUTES
+    setZoom(next)
+  }
   useEffect(() => {
     function checkReminders() {
       const dueStarts = dueReminderTasks(tasks).filter((task) => {
@@ -356,13 +393,13 @@ function App() {
     const track = calendarScrollRef.current?.querySelector<HTMLElement>(`.day-track[data-day="${CSS.escape(target.day)}"]`)
     const trackTop = track?.getBoundingClientRect().top ?? event.over.rect.top
     const previewTop = event.active.rect.current.translated?.top ?? initialY + event.delta.y
-    return { day: target.day, trackTop, previewTop, slot: dropDateFromPosition(new Date(target.day), previewTop, trackTop, SLOT_HEIGHT, SLOT_MINUTES) }
+    return { day: target.day, trackTop, previewTop, slot: dropDateFromPosition(new Date(target.day), previewTop, trackTop, slotHeight, SLOT_MINUTES) }
   }
   function handleDragMove(event: DragMoveEvent) {
     const result = dragSlotFromEvent(event)
     if (!result) { dragGuideRef.current = null; setDragGuide(null); setDragPreviewOffsetY(0); return }
     const minutes = result.slot.getHours() * 60 + result.slot.getMinutes()
-    const guideTop = (minutes / SLOT_MINUTES) * SLOT_HEIGHT
+    const guideTop = (minutes / SLOT_MINUTES) * slotHeight
     const guide = { day: result.day, slot: result.slot, top: guideTop }
     dragGuideRef.current = guide
     setDragGuide(guide)
@@ -485,9 +522,9 @@ function App() {
   function startResize(event: React.PointerEvent, task: Task) {
     if (event.pointerType === 'touch') return
     event.preventDefault(); event.stopPropagation(); const startY = event.clientY; const original = task.duration
-    const onMove = (moveEvent: PointerEvent) => { const slots = Math.round((moveEvent.clientY - startY) / SLOT_HEIGHT); setResizePreview({ id: task.id, duration: Math.max(15, Math.min(720, original + slots * SLOT_MINUTES)) }) }
+    const onMove = (moveEvent: PointerEvent) => { const slots = Math.round((moveEvent.clientY - startY) / slotHeight); setResizePreview({ id: task.id, duration: Math.max(15, Math.min(720, original + slots * SLOT_MINUTES)) }) }
     const onUp = (upEvent: PointerEvent) => {
-      const slots = Math.round((upEvent.clientY - startY) / SLOT_HEIGHT); const duration = Math.max(15, Math.min(720, original + slots * SLOT_MINUTES))
+      const slots = Math.round((upEvent.clientY - startY) / slotHeight); const duration = Math.max(15, Math.min(720, original + slots * SLOT_MINUTES))
       commitTaskChange('时长调整', `时长已调整为 ${durationLabel(duration)}`, (current) => current.map((item) => item.id === task.id ? { ...item, duration, endRemindedAt: null } : item)); setResizePreview(null)
       window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp)
     }
@@ -549,12 +586,12 @@ function App() {
 
   function renderTimeline(days: Date[]) {
     const slots = Array.from({ length: SLOT_COUNT }, (_, index) => index)
-    return <div className="duration-timeline" style={{ '--day-count': days.length, '--slot-height': `${SLOT_HEIGHT}px`, '--slot-count': SLOT_COUNT } as React.CSSProperties}>
+    return <div className="duration-timeline" style={{ '--day-count': days.length, '--slot-height': `${slotHeight}px`, '--slot-count': SLOT_COUNT } as React.CSSProperties}>
       <div className="timeline-header-corner" />
       {days.map((day) => <div className={`day-heading${isSameDay(day, new Date()) ? ' is-today' : ''}`} key={`heading-${day.toISOString()}`}><span>{format(day, 'EEE', { locale: zhCN })}</span><strong>{format(day, 'd')}</strong></div>)}
-      <div className="time-rail">{Array.from({ length: WORK_END - WORK_START + 1 }, (_, index) => <span key={index} style={{ top: index * SLOT_HEIGHT * 4 }}>{String(WORK_START + index).padStart(2, '0')}:00</span>)}</div>
+      <div className="time-rail">{Array.from({ length: WORK_END - WORK_START + 1 }, (_, index) => <span key={index} style={{ top: index * slotHeight * 4 }} hidden={slotHeight < 6 && index % 2 !== 0}>{String(WORK_START + index).padStart(2, '0')}:00</span>)}</div>
       {days.map((day) => {
-        const layout = layoutDayTasks(filteredTasks.filter((task) => task.start && isSameDay(new Date(task.start), day)), resizePreview)
+        const layout = layoutDayTasks(filteredTasks.filter((task) => task.start && isSameDay(new Date(task.start), day)), resizePreview, slotHeight)
         return <DroppableDayTrack day={day} guide={dragGuide} key={day.toISOString()}><div className="drop-slots">{slots.map((slotIndex) => { const slot = new Date(day); slot.setHours(WORK_START, slotIndex * SLOT_MINUTES, 0, 0); return <TimeSlot key={slotIndex} slot={slot} onClick={() => selectedTaskId && scheduleTask(selectedTaskId, slot)} /> })}</div><div className="event-layer">{layout.map((item) => <CalendarEvent key={item.task.id} item={item} duration={resizePreview?.id === item.task.id ? resizePreview.duration : item.task.duration} batchMode={batchMode} batchSelected={batchSelection.has(item.task.id)} onOpen={() => beginEdit(item.task)} onToggleBatch={() => toggleBatchTask(item.task.id)} onStatus={(status) => updateStatus(item.task.id, status)} onResize={(event) => startResize(event, item.task)} />)}</div></DroppableDayTrack>
       })}
     </div>
@@ -572,10 +609,9 @@ function App() {
     return <><div className="today-stats"><div><span>已完成</span><strong>{completedTodayTasks.length} / {todayTasks.length} 项</strong></div><div><span>计划时间</span><strong>{durationLabel(plannedMinutes)}</strong></div><div><span>完成时间</span><strong>{durationLabel(completedMinutes)}</strong></div></div>{overdueTasks.length > 0 && <section className="overdue-section"><div className="overdue-heading"><div><h3>以前未完成</h3><span>{overdueTasks.length} 项需要重新安排</span></div><button className="secondary-button" type="button" onClick={moveAllOverdue}>全部移到今天</button></div><div className="overdue-list">{overdueTasks.map((task) => <div className={`overdue-item color-${task.color}`} key={task.id}><span className="overdue-dot" /><div><strong>{task.title}</strong><small>{format(new Date(task.start!), 'M 月 d 日 HH:mm')} · {durationLabel(task.duration)}</small></div><button type="button" onClick={() => moveToToday(task.id)}>移到今天</button></div>)}</div></section>}<div ref={calendarScrollRef} className="calendar-surface today-timeline">{renderTimeline([today])}</div></>
   }
   function calendarBody() {
-    if (view === 'today') return renderToday()
     if (view === 'month') return <div className="calendar-surface">{renderMonth()}</div>
-    if (view === 'week') return <div ref={calendarScrollRef} className="calendar-surface">{renderTimeline(weekDays(anchor))}</div>
-    return <div ref={calendarScrollRef} className="calendar-surface view-day">{renderTimeline([anchor])}</div>
+    const body = view === 'today' ? renderToday() : <div ref={calendarScrollRef} className={`calendar-surface${view === 'day' ? ' view-day' : ''}`}>{renderTimeline(view === 'week' ? weekDays(anchor) : [anchor])}</div>
+    return <><CalendarZoom zoom={zoom} disabled={draggingTaskId !== null || resizePreview !== null} onStep={(direction) => changeZoom(stepCalendarZoom(zoom, slotHeight, direction))} onChange={changeZoom} />{body}</>
   }
 
   const totalMinutes = visibleTasks.reduce((sum, task) => sum + task.duration, 0)

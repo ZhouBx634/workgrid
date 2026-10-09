@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict'
 import { dropDateFromPosition, parseDurationInput } from './src/scheduling.ts'
 import { dueEndReminderTasks, dueReminderTasks } from './src/reminders.ts'
+import { DEFAULT_SLOT_HEIGHT, fitSlotHeight, parseCalendarZoom, stepCalendarZoom } from './src/calendarZoom.ts'
+
+for (const value of [null, '', '0', 'NaN', '10', '200', '37.5']) assert.equal(parseCalendarZoom(value), 100)
+assert.equal(parseCalendarZoom('fit'), 'fit')
+assert.equal(parseCalendarZoom('25'), 25)
+assert.equal(parseCalendarZoom('150'), 150)
+assert.equal(fitSlotHeight(648), 6)
+assert.equal(fitSlotHeight(40), 1)
+assert.equal(stepCalendarZoom(100, DEFAULT_SLOT_HEIGHT, -1), 75)
+assert.equal(stepCalendarZoom(25, 5.5, -1), 25)
+assert.equal(stepCalendarZoom(150, 33, 1), 150)
+assert.equal(stepCalendarZoom('fit', 6, 1), 50)
+assert.equal(stepCalendarZoom('fit', 6, -1), 25)
 
 assert.equal(parseDurationInput(''), null)
 assert.equal(parseDurationInput('0'), null)
@@ -17,6 +30,10 @@ const lastSlotDrop = dropDateFromPosition(day, 100 + 96 * 22 + 50, 100, 22)
 assert.deepEqual([midnightDrop.getHours(), midnightDrop.getMinutes()], [0, 0])
 assert.deepEqual([morningDrop.getHours(), morningDrop.getMinutes()], [7, 30])
 assert.deepEqual([lastSlotDrop.getHours(), lastSlotDrop.getMinutes()], [23, 45])
+for (const height of [5.5, 11, 16.5, 22, 33, fitSlotHeight(648)]) {
+  const scaledDrop = dropDateFromPosition(day, 100 + 41.5 * height, 100, height)
+  assert.deepEqual([scaledDrop.getHours(), scaledDrop.getMinutes()], [10, 15])
+}
 
 const scheduledTask = {
   id: 'regression-task',
