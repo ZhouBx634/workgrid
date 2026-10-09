@@ -1,9 +1,9 @@
 import type { Task, TaskColor, WorkGridBackup } from './types'
 
 export const BACKUP_FORMAT = 'workgrid-backup'
-export const BACKUP_SCHEMA_VERSION = 6
+export const BACKUP_SCHEMA_VERSION = 7
 export const MAX_BACKUP_BYTES = 5 * 1024 * 1024
-export const APP_VERSION = '0.10.1'
+export const APP_VERSION = '0.11.0'
 
 const COLORS: TaskColor[] = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'purple']
 
@@ -102,6 +102,17 @@ function validateTask(value: unknown, index: number): Task {
     if (recurrence.weekdays !== undefined && (!Array.isArray(recurrence.weekdays) || recurrence.weekdays.some((day) => typeof day !== 'number' || day < 0 || day > 6))) throw new BackupError(`第 ${index + 1} 个工作方块重复星期无效`)
   }
 
+  const calendarImport = value.calendarImport
+  if (calendarImport !== undefined) {
+    if (!isRecord(calendarImport)
+      || !['calendarKey', 'eventKey', 'course', 'originalTitle'].every((key) => typeof calendarImport[key] === 'string' && String(calendarImport[key]).trim().length > 0 && String(calendarImport[key]).length <= 1000)
+      || !['location', 'teacher', 'teachingClass'].every((key) => typeof calendarImport[key] === 'string' && String(calendarImport[key]).length <= 1000)
+      || !isIsoDate(calendarImport.originalStart)
+      || !Number.isInteger(calendarImport.originalDuration) || Number(calendarImport.originalDuration) < 1 || Number(calendarImport.originalDuration) > 720) {
+      throw new BackupError(`第 ${index + 1} 个工作方块课表来源无效`)
+    }
+  }
+
   return {
     id,
     title: title.trim(),
@@ -119,6 +130,7 @@ function validateTask(value: unknown, index: number): Task {
     deletedAt: deletedAt as string | null,
     ...(seriesId !== null ? { seriesId: seriesId as string } : {}),
     ...(recurrence !== null ? { recurrence: recurrence as unknown as Task['recurrence'] } : {}),
+    ...(calendarImport !== undefined ? { calendarImport: calendarImport as unknown as Task['calendarImport'] } : {}),
   }
 }
 
@@ -216,6 +228,7 @@ function tasksEqual(left: Task, right: Task) {
     && left.endRemindedAt === right.endRemindedAt
     && JSON.stringify(left.tags) === JSON.stringify(right.tags)
     && left.deletedAt === right.deletedAt
+    && JSON.stringify(left.calendarImport) === JSON.stringify(right.calendarImport)
 }
 
 function nextUniqueId(usedIds: Set<string>) {

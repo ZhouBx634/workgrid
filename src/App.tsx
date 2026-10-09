@@ -7,6 +7,9 @@ import { monthDays, monthLabel, moveAnchor, normalizeDropDate, taskIsVisible, ta
 import DataManagement from './components/DataManagement'
 import CloudSync from './components/CloudSync'
 import InstallApp from './components/InstallApp'
+import CourseImport from './components/CourseImport'
+import { applyCourseImport, undoCourseImport, type CourseOccurrence } from './courseImport'
+import { clearCourseRecovery, loadCourseRecovery, saveCourseRecovery } from './courseRecovery'
 import { dueEndReminderTasks, dueReminderTasks, reminderLabel } from './reminders'
 import { dropDateFromPosition, parseDurationInput } from './scheduling'
 import { recurrenceDates, recurrenceLabel } from './recurrence'
@@ -138,7 +141,7 @@ function CalendarEvent({ item, duration, batchMode, batchSelected, onOpen, onTog
   return (
     <article ref={setNodeRef} className={`calendar-event color-${task.color} status-${task.status}${batchSelected ? ' is-batch-selected' : ''}${isDragging ? ' is-dragging' : ''}`} style={style} aria-label={`${task.title}，${STATUS_LABELS[task.status]}，${format(start, 'HH:mm')} 至 ${format(end, 'HH:mm')}`} onClick={(event) => { event.stopPropagation(); batchMode ? onToggleBatch() : onOpen() }} {...attributes} {...(!batchMode ? listeners : {})}>
       {batchMode && <SelectionMark selected={batchSelected} />}
-      <div className="event-main"><strong>{task.title}</strong><span>{format(start, 'HH:mm')} - {format(end, 'HH:mm')}</span></div>
+      <div className="event-main"><strong>{task.title}</strong><span>{format(start, 'HH:mm')} - {format(end, 'HH:mm')}</span>{task.calendarImport && <small className="course-event-details" title={[task.calendarImport.location, task.calendarImport.teacher, task.calendarImport.teachingClass].filter(Boolean).join(' · ')}>{[task.calendarImport.location, task.calendarImport.teacher].filter(Boolean).join(' · ')}</small>}</div>
       {!batchMode && <div className="event-actions" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>{task.status === 'completed' ? <button type="button" aria-label="重新打开" title="重新打开" onClick={() => onStatus('todo')}><RotateCcw size={13} /></button> : <><button type="button" aria-label={task.status === 'in-progress' ? '暂停' : '开始'} title={task.status === 'in-progress' ? '暂停' : '开始'} onClick={() => onStatus(task.status === 'in-progress' ? 'todo' : 'in-progress')}>{task.status === 'in-progress' ? <Pause size={13} /> : <Play size={13} />}</button><button type="button" aria-label="完成" title="完成" onClick={() => onStatus('completed')}><Check size={14} /></button></>}</div>}
       {!batchMode && <button className="resize-handle" type="button" aria-label="调整时长" title="拖动调整时长" onPointerDown={onResize} onClick={(event) => { event.preventDefault(); event.stopPropagation() }} />}
     </article>
@@ -197,6 +200,8 @@ function App() {
   const [undoEntry, setUndoEntry] = useState<UndoEntry | null>(null)
   const [trashOpen, setTrashOpen] = useState(false)
   const [canUndoImport, setCanUndoImport] = useState(() => loadImportRecovery() !== null)
+  const [courseImportOpen, setCourseImportOpen] = useState(false)
+  const [canUndoCourseImport, setCanUndoCourseImport] = useState(() => loadCourseRecovery() !== null)
   const [batchMode, setBatchMode] = useState(false)
   const [batchSelection, setBatchSelection] = useState<Set<string>>(new Set())
   const [dragGuide, setDragGuide] = useState<DragGuide | null>(null)
@@ -432,6 +437,36 @@ function App() {
     try { saveTasks(recovery); replaceTasksFromExternal(recovery); clearImportRecovery(); setCanUndoImport(false); setSelectedTaskId(null); notify('已撤销上次导入') }
     catch { notify('恢复失败，当前数据未改变') }
   }
+  function importCourses(courses: CourseOccurrence[], updateKeys: Set<string>, reviewedTasks: string) {
+    const current = tasksRef.current
+    if (JSON.stringify(current) !== reviewedTasks) { notify('日程已变化，请重新核对课表预览后确认'); return false }
+    const result = applyCourseImport(current, courses, updateKeys)
+    if (!result.changes.length) { notify('课程已导入，无需重复添加'); return false }
+    const previousRecovery = loadCourseRecovery()
+    try {
+      saveCourseRecovery(result.changes)
+      saveTasks(result.tasks)
+    } catch {
+      try { previousRecovery ? saveCourseRecovery(previousRecovery) : clearCourseRecovery() } catch { /* Current schedules remain unchanged. */ }
+      notify('浏览器存储空间不足，课表导入未完成，原日程保留')
+      return false
+    }
+    replaceTasksFromExternal(result.tasks)
+    setCanUndoCourseImport(true)
+    notify(`课表已导入：新增 ${result.added} 节，更新 ${result.updated} 节，原有日程保留`)
+    return true
+  }
+  function undoLastCourseImport() {
+    const recovery = loadCourseRecovery()
+    if (!recovery) { setCanUndoCourseImport(false); notify('没有可撤销的课表导入'); return }
+    const result = undoCourseImport(tasksRef.current, recovery)
+    try { saveTasks(result.tasks) }
+    catch { notify('撤销失败，当前日程未改变'); return }
+    replaceTasksFromExternal(result.tasks)
+    try { clearCourseRecovery() } catch { /* Repeating undo will not touch unrelated tasks. */ }
+    setCanUndoCourseImport(false)
+    notify(`已撤销 ${result.reverted} 节课程${result.skipped ? `，保留 ${result.skipped} 节导入后修改的课程` : ''}，其他日程保留`)
+  }
   function moveToToday(taskId: string) {
     commitTaskChange('移到今天', '已移到今天', (current) => current.map((task) => {
       if (task.id !== taskId || !task.start) return task
@@ -551,12 +586,13 @@ function App() {
         <div className="brand"><span className="brand-mark"><CalendarDays size={18} /></span><span>WorkGrid</span></div>
         <div className="view-switcher" role="group" aria-label="日历视图">{(Object.keys(VIEW_LABELS) as ViewMode[]).map((mode) => <button key={mode} type="button" className={view === mode ? 'is-active' : ''} onClick={() => selectView(mode)}>{VIEW_LABELS[mode]}</button>)}</div>
         <div className="date-controls">
-          <InstallApp /><CloudSync tasks={tasks} setTasks={replaceTasksFromExternal} onNotify={notify} /><DataManagement tasks={tasks} canUndoImport={canUndoImport} onImport={importTasks} onUndoImport={undoLastImport} onNotify={notify} />
+          <InstallApp /><CloudSync tasks={tasks} setTasks={replaceTasksFromExternal} onNotify={notify} /><DataManagement tasks={tasks} canUndoImport={canUndoImport} onImport={importTasks} onUndoImport={undoLastImport} onNotify={notify} onOpenCourseImport={() => setCourseImportOpen(true)} canUndoCourseImport={canUndoCourseImport} onUndoCourseImport={undoLastCourseImport} />
           <button className="icon-button trash-button" type="button" aria-label={`回收站，${trashedTasks.length} 项`} title="回收站" onClick={() => setTrashOpen(true)}><Trash2 size={17} />{trashedTasks.length > 0 && <span>{trashedTasks.length > 99 ? '99+' : trashedTasks.length}</span>}</button>
           <span className="toolbar-divider" />
           {view !== 'today' && <><button className="icon-button" type="button" aria-label="上一周期" title="上一周期" onClick={() => setAnchor((date) => moveAnchor(date, view, -1))}><ChevronLeft size={18} /></button><button className="today-button" type="button" aria-label={`回到今天，当前选择 ${format(anchor, view === 'month' ? 'yyyy 年 M 月' : 'M 月 d 日')}`} onClick={() => setAnchor(new Date())}>{isSameDay(anchor, new Date()) ? '今天' : format(anchor, view === 'month' ? 'M 月' : 'M 月 d 日')}</button><button className="icon-button" type="button" aria-label="下一周期" title="下一周期" onClick={() => setAnchor((date) => moveAnchor(date, view, 1))}><ChevronRight size={18} /></button></>}
         </div>
       </header>
+      {courseImportOpen && <CourseImport tasks={tasks} canUndo={canUndoCourseImport} onApply={importCourses} onUndo={undoLastCourseImport} onClose={() => setCourseImportOpen(false)} />}
       <div className="workspace">
         <DroppableBacklog>
           <div className="panel-heading"><div><h1>待安排</h1><span>{unscheduled.length} 个方块</span></div>{selectedTask && !batchMode && <button className="clear-selection" type="button" onClick={() => setSelectedTaskId(null)}><X size={14} />取消选择</button>}</div>
